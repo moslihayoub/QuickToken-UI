@@ -1,0 +1,5 @@
+{
+  "name": "QuickToken-UI",
+  "description": "A modern tool to visualize, select, and convert design tokens (JSON/CSV) into usable formats.",
+  "requestFramePermissions": []
+}
