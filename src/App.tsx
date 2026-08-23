@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Upload, Download, Copy, Trash2, Layers, Check, Grid, List, Search, Palette, Type, Ruler, Filter, X, ChevronDown, RefreshCcw, CloudUpload } from 'lucide-react';
-import { FigmaExport, TokenItem, FigmaVariable, FigmaColorValue } from './types';
-import { figmaColorToHex, figmaColorToRgba, downloadBlob, jsonToCSV, getContrastColor } from './utils';
+import { Download, Copy, Trash2, Layers, Check, Grid, Search, Palette, Type, Ruler, Filter, ChevronDown, RefreshCcw, CloudUpload } from 'lucide-react';
+import { TokenItem, FigmaColorValue } from './types';
+import { figmaColorToHex, figmaColorToRgba, downloadBlob, jsonToCSV } from './lib/utils';
 
 // --- DEMO DATA ---
 const DEMO_DATA_STR = JSON.stringify({
@@ -48,26 +48,34 @@ const DEMO_DATA_STR = JSON.stringify({
 
 // --- Helper Functions ---
 
+import { FigmaExportSchema } from './lib/schemas';
+
 const parseTokens = (content: string): TokenItem[] => {
   try {
-    const json: FigmaExport = JSON.parse(content);
+    const json = JSON.parse(content);
+    const parsed = FigmaExportSchema.safeParse(json);
     
-    if (!json.variables) {
+    if (!parsed.success) {
+      console.error("Zod Validation Error:", parsed.error);
+      throw new Error("Invalid format: " + parsed.error.issues[0].message);
+    }
+
+    const data = parsed.data;
+    if (!data.variables) {
       throw new Error("Invalid format: 'variables' array missing.");
     }
 
-    const defaultModeId = Object.keys(json.modes)[0];
+    const defaultModeId = Object.keys(data.modes)[0] || 'mode-1';
 
-    return json.variables.map(v => {
+    return data.variables.map(v => {
       const resolvedEntry = v.resolvedValuesByMode[defaultModeId];
       const rawValue = resolvedEntry?.resolvedValue;
 
-      let displayValue = '';
-      let cssValue = '';
+      let displayValue: string;
+      let cssValue: string;
 
       if (v.type === 'COLOR') {
         const colorVal = rawValue as FigmaColorValue;
-        // Handle cases where color might be incomplete or just RGB
         if(colorVal && typeof colorVal.r === 'number') {
            displayValue = figmaColorToHex(colorVal);
            cssValue = figmaColorToRgba(colorVal);
@@ -108,87 +116,7 @@ const parseTokens = (content: string): TokenItem[] => {
   }
 };
 
-// --- Sub-Components ---
-
-const Card: React.FC<{
-  item: TokenItem;
-  selected: boolean;
-  onSelect: (id: string) => void;
-  onCopy: (val: string) => void;
-}> = ({ item, selected, onSelect, onCopy }) => {
-  
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onCopy(item.displayValue);
-  };
-
-  return (
-    <div 
-      onClick={() => onSelect(item.id)}
-      className={`
-        group relative flex flex-col rounded-xl border transition-all duration-200 cursor-pointer overflow-hidden
-        ${selected 
-          ? 'border-blue-500 bg-blue-500/10 ring-1 ring-blue-500' 
-          : 'border-zinc-800 bg-zinc-900/50 hover:border-zinc-700 hover:bg-zinc-800/50'}
-      `}
-    >
-      {/* Visual Preview Area */}
-      <div className="h-24 w-full relative flex items-center justify-center bg-zinc-950/30 border-b border-zinc-800/50 overflow-hidden">
-        {item.type === 'COLOR' && (
-          <div 
-            className="absolute inset-0 w-full h-full transition-transform group-hover:scale-110 duration-500"
-            style={{ backgroundColor: item.cssValue }}
-          />
-        )}
-        
-        {item.type === 'FLOAT' && (
-          <div className="flex flex-col items-center justify-center w-full px-4">
-             {/* Preview Bar */}
-            <div className="w-full h-8 bg-zinc-800 rounded-md overflow-hidden flex items-center mb-2">
-              <div 
-                 className="h-full bg-blue-500 rounded-md" 
-                 style={{ width: `${Math.min(Number(item.value) * 2, 100)}%` }} 
-              />
-            </div>
-          </div>
-        )}
-
-        {item.type === 'STRING' && (
-           <div className="px-4 text-center">
-             <span className="text-xl font-bold text-zinc-500 truncate w-full block">
-                {item.displayValue}
-             </span>
-           </div>
-        )}
-
-        {/* Selection Checkbox (Visual only) */}
-        <div className={`absolute top-2 right-2 h-5 w-5 rounded-full border flex items-center justify-center transition-colors ${selected ? 'bg-blue-500 border-blue-500' : 'bg-zinc-900/50 border-zinc-600'}`}>
-            {selected && <Check size={12} className="text-white" />}
-        </div>
-      </div>
-
-      {/* Content Area */}
-      <div className="p-3 flex flex-col gap-1">
-        <div className="flex justify-between items-start">
-           <div className="flex flex-col min-w-0">
-              <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider truncate" title={item.subGroup}>{item.subGroup || item.group}</span>
-              <span className="text-sm font-semibold text-zinc-200 truncate" title={item.name}>{item.label}</span>
-           </div>
-           <button 
-             onClick={handleCopy}
-             className="p-1.5 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 rounded-md transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-             title="Copy value"
-            >
-              <Copy size={14} />
-           </button>
-        </div>
-        <code className="text-xs text-zinc-400 bg-zinc-950/50 px-2 py-1 rounded w-fit mt-2 font-mono">
-          {item.displayValue}
-        </code>
-      </div>
-    </div>
-  );
-};
+import { Card } from './components/ui/Card';
 
 // --- Main App Component ---
 
@@ -231,13 +159,18 @@ const App: React.FC = () => {
 
   // --- Logic ---
 
+  const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
   const loadData = useCallback((content: string) => {
     try {
       const items = parseTokens(content);
       setData(items);
       setSelectedIds(new Set()); // Reset selections
       showToast(`Successfully imported ${items.length} tokens`, 'success');
-    } catch (e) {
+    } catch {
       showToast('Failed to parse file. Ensure it is a valid Figma Variables Export JSON.', 'error');
     }
   }, []);
@@ -259,11 +192,6 @@ const App: React.FC = () => {
   const handleReset = () => {
      loadData(DEMO_DATA_STR);
      showToast("Reset to default demo data", "success");
-  };
-
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
   };
 
   const copyToClipboard = (text: string) => {
@@ -304,7 +232,7 @@ const App: React.FC = () => {
       const output = itemsToExport.reduce((acc, item) => {
         acc[item.name] = item.value;
         return acc;
-      }, {} as Record<string, any>);
+      }, {} as Record<string, unknown>);
       downloadBlob(JSON.stringify(output, null, 2), 'tokens.json', 'application/json');
     } else {
       const csvContent = jsonToCSV(itemsToExport);
@@ -318,7 +246,7 @@ const App: React.FC = () => {
     const output = itemsToExport.reduce((acc, item) => {
         acc[item.name] = item.displayValue;
         return acc;
-      }, {} as Record<string, any>);
+      }, {} as Record<string, unknown>);
     copyToClipboard(JSON.stringify(output, null, 2));
   };
 
@@ -384,12 +312,7 @@ const App: React.FC = () => {
     const sections: Record<string, TokenItem[]> = {};
     
     filteredData.forEach(item => {
-        let key = '';
-        if (activeTab === 'ALL') {
-            key = item.group;
-        } else {
-            key = item.subGroup || 'General';
-        }
+        const key = activeTab === 'ALL' ? item.group : (item.subGroup || 'General');
         
         if (!sections[key]) sections[key] = [];
         sections[key].push(item);

@@ -1,4 +1,4 @@
-import { FigmaColorValue, TokenItem } from './types';
+import { FigmaColorValue, TokenItem } from '../types';
 
 export const toHex = (n: number): string => {
   const hex = Math.round(n * 255).toString(16);
